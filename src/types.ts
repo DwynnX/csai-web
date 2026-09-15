@@ -29,4 +29,9 @@ export const DEFAULT_SETTINGS: Settings = {
   soundEffects: false,
   enterToSend: true,
   compactMode: false,
+}
+
+export interface User {
+  username: string;
+  token: string; // фейковый токен для сессии
 };
