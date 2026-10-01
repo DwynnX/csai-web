@@ -1,7 +1,6 @@
-import React, { createContext, useContext, useReducer, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useReducer, ReactNode } from 'react';
 import { Page, Message, Session, Settings, DEFAULT_SETTINGS, User } from './types';
 
-// ... (функции generateId, generateSessionName, createSystemMessage, createSession остаются без изменений) ...
 function generateId(): string { return Math.random().toString(36).substring(2, 10) + Date.now().toString(36); }
 function generateSessionName(): string {
   const adj = ['silent', 'quantum', 'neural', 'dark', 'prime'];
@@ -23,8 +22,9 @@ interface State {
   settings: Settings;
   sidebarOpen: boolean;
   isLoading: boolean;
-  user: User | null; // <-- НОВОЕ ПОЛЕ
-  authPage: 'login' | 'register'; // <-- Для переключения между входом и регистрацией
+  user: User | null;
+  authPage: 'login' | 'register' | '2fa';
+  registeredUsers: User[]; // База "зарегистрированных" пользователей
 }
 
 type Action =
@@ -37,37 +37,77 @@ type Action =
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'DELETE_SESSION'; payload: string }
   | { type: 'CLEAR_SESSION'; payload: string }
-  | { type: 'LOGIN'; payload: User } // <-- НОВОЕ
-  | { type: 'LOGOUT' } // <-- НОВОЕ
-  | { type: 'SET_AUTH_PAGE'; payload: 'login' | 'register' }; // <-- НОВОЕ
+  | { type: 'REGISTER_USER'; payload: User }
+  | { type: 'LOGIN'; payload: User }
+  | { type: 'LOGOUT' }
+  | { type: 'SET_AUTH_PAGE'; payload: 'login' | 'register' | '2fa' }
+  | { type: 'UPDATE_PROFILE'; payload: Partial<User> }
+  | { type: 'TOGGLE_2FA'; payload: boolean };
 
-const initialSession = createSession();
-
-// Загружаем пользователя из localStorage при старте
-const savedUser = typeof window !== 'undefined' ? localStorage.getItem('csai_user') : null;
+const savedUser = typeof window !== 'undefined' ? localStorage.getItem('csai_current_user') : null;
+const savedUsers = typeof window !== 'undefined' ? localStorage.getItem('csai_registered_users') : null;
 
 const initialState: State = {
   currentPage: 'chat',
-  sessions: [initialSession],
-  activeSessionId: initialSession.id,
+  sessions: [createSession()],
+  activeSessionId: null,
   settings: DEFAULT_SETTINGS,
   sidebarOpen: false,
   isLoading: false,
   user: savedUser ? JSON.parse(savedUser) : null,
   authPage: 'login',
+  registeredUsers: savedUsers ? JSON.parse(savedUsers) : [],
 };
 
 function reducer(state: State, action: Action): State {
+  let newState = { ...state };
+
   switch (action.type) {
+    case 'REGISTER_USER':
+      newState.registeredUsers = [...state.registeredUsers, action.payload];
+      localStorage.setItem('csai_registered_users', JSON.stringify(newState.registeredUsers));
+      return newState;
+
     case 'LOGIN':
-      localStorage.setItem('csai_user', JSON.stringify(action.payload));
-      return { ...state, user: action.payload, currentPage: 'chat' };
+      newState.user = action.payload;
+      newState.currentPage = 'chat';
+      newState.sessions = [createSession()];
+      newState.activeSessionId = newState.sessions[0].id;
+      localStorage.setItem('csai_current_user', JSON.stringify(action.payload));
+      return newState;
+
     case 'LOGOUT':
-      localStorage.removeItem('csai_user');
-      return { ...state, user: null, currentPage: 'chat', sessions: [createSession()], activeSessionId: null };
+      newState.user = null;
+      newState.authPage = 'login';
+      newState.sessions = [];
+      newState.activeSessionId = null;
+      localStorage.removeItem('csai_current_user');
+      return newState;
+
     case 'SET_AUTH_PAGE':
       return { ...state, authPage: action.payload };
-    // ... остальные case остаются как были ...
+
+    case 'UPDATE_PROFILE':
+      if (state.user) {
+        const updatedUser = { ...state.user, ...action.payload };
+        const updatedUsers = state.registeredUsers.map(u => u.username === state.user!.username ? updatedUser : u);
+        localStorage.setItem('csai_current_user', JSON.stringify(updatedUser));
+        localStorage.setItem('csai_registered_users', JSON.stringify(updatedUsers));
+        return { ...state, user: updatedUser, registeredUsers: updatedUsers };
+      }
+      return state;
+
+    case 'TOGGLE_2FA':
+      if (state.user) {
+        const secret = action.payload ? Math.floor(100000 + Math.random() * 900000).toString() : undefined;
+        const updatedUser = { ...state.user, twoFactorEnabled: action.payload, twoFactorSecret: secret };
+        const updatedUsers = state.registeredUsers.map(u => u.username === state.user!.username ? updatedUser : u);
+        localStorage.setItem('csai_current_user', JSON.stringify(updatedUser));
+        localStorage.setItem('csai_registered_users', JSON.stringify(updatedUsers));
+        return { ...state, user: updatedUser, registeredUsers: updatedUsers };
+      }
+      return state;
+
     case 'SET_PAGE': return { ...state, currentPage: action.payload, sidebarOpen: false };
     case 'SET_ACTIVE_SESSION': return { ...state, activeSessionId: action.payload, currentPage: 'chat' };
     case 'NEW_SESSION': { const s = createSession(); return { ...state, sessions: [s, ...state.sessions], activeSessionId: s.id, currentPage: 'chat' }; }
@@ -81,7 +121,6 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-// ... StoreProvider и useStore остаются без изменений ...
 interface StoreContextType { state: State; dispatch: React.Dispatch<Action>; activeSession: Session | null; }
 const StoreContext = createContext<StoreContextType | null>(null);
 export function StoreProvider({ children }: { children: ReactNode }) {
